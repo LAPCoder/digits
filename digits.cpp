@@ -12,6 +12,15 @@
  * - verbose mode (--verbose)
  * - build precalculated table (--build)
  * - save/load table to/from binary file (--save file.bin / --load file.bin)
+ * - multithreading + snapshots
+ * - final cleanup of useless parentheses
+ * 
+ * TODO:
+ * - fix 0s at the start at numbers (like 11257 = 09573+1684)
+ *   it must update flags, so find the origin of the bug
+ * - SIMD
+ * - GPU
+ * - Multithreading when number is not in database
  */
 
 #include <cstdint>
@@ -35,7 +44,7 @@
 #include <system_error>
 
 // Store what digits are used (0-9) in one var.
-// Order: oooo oo98  7654 3210
+// Order: oooo oo98 7654 3210
 typedef uint16_t numUsed;
 
 // The main type
@@ -59,19 +68,98 @@ struct operation
 	numUsed flags;	 // What digits are used?
 	type result;	 // Result of the OP
 	std::string out; // The result in human-readable form.
-					 // automatically puts parenthesis.
 };
 
 ///------- CONSTANTS --------------------------------------------------------///
 
-constexpr type MAX_RESULT = 1'000'000;
-constexpr size_t MAX_PRECALC_OPS = 100'000'000; // Suggested reserve
+constexpr type MAX_RESULT = 10'000'000; // Maximum number size
+constexpr size_t MAX_PRECALC_OPS = 1'000'000'000; // Suggested reserve
 const operation voidOP = {0, 0, ""};			// To initialize at the start
 
 ///------- GLOBALS ----------------------------------------------------------///
 
 std::vector<operation> operation_map; // main storage (global)
 bool VERBOSE = false;
+
+///------- CLEANUP FUNCTIONS ------------------------------------------------///
+
+// remove outer parentheses if the whole string is wrapped
+static std::string strip_outer(const std::string &expr)
+{
+	if (expr.size() >= 2 && expr.front() == '(' && expr.back() == ')')
+	{
+		int depth = 0;
+		for (size_t i = 0; i < expr.size(); i++)
+		{
+			if (expr[i] == '(')
+				depth++;
+			else if (expr[i] == ')')
+				depth--;
+			if (depth == 0 && i != expr.size() - 1)
+				return expr; // not a single wrapping pair
+		}
+		return expr.substr(1, expr.size() - 2);
+	}
+	return expr;
+}
+
+// flatten associative ops: ((A+B)+C) => (A+B+C)
+static std::string flatten(const std::string &expr, char op)
+{
+	std::string res;
+	int depth = 0;
+	for (size_t i = 0; i < expr.size(); i++)
+	{
+		char c = expr[i];
+		if (c == '(')
+			depth++;
+		else if (c == ')')
+			depth--;
+		if (depth == 1 && c == op)
+		{
+			// remove parenthesis boundary around nested
+			if (res.size() >= 2 && res.back() == ')')
+				res.pop_back();
+			res.push_back(op);
+			continue;
+		}
+		res.push_back(c);
+	}
+	return res;
+}
+
+static void clean_expression(std::string &expr)
+{
+	bool changed = true;
+	while (changed)
+	{
+		changed = false;
+		std::string s = strip_outer(expr);
+		if (s != expr)
+		{
+			expr = s;
+			changed = true;
+		}
+		if (expr.find("+") != std::string::npos)
+		{
+			std::string f = flatten(expr, '+');
+			if (f != expr)
+			{
+				expr = f;
+				changed = true;
+			}
+		}
+		if (expr.find("*") != std::string::npos)
+		{
+			std::string f = flatten(expr, '*');
+			if (f != expr)
+			{
+				expr = f;
+				changed = true;
+			}
+		}
+	}
+}
 
 ///------- THREAD-SAFE HELPERS -----------------------------------------------///
 
@@ -187,7 +275,8 @@ static bool append_entries_to_snapshot(const std::string &filename, size_t start
 }
 
 // snapshot thread: wakes on condition or every snapshot_interval_sec to flush appended entries
-static void snapshot_thread_func(const std::string snapshot_file, size_t snapshot_interval_sec, size_t snapshot_threshold)
+static void snapshot_thread_func(const std::string &final_file, const std::string &temp_file,
+								 size_t snapshot_interval_sec, size_t snapshot_threshold)
 {
 	while (!snapshot_stop_requested)
 	{
@@ -205,11 +294,9 @@ static void snapshot_thread_func(const std::string snapshot_file, size_t snapsho
 		size_t to_save_from = last_saved_index.load(std::memory_order_acquire);
 		if (cur_size <= to_save_from)
 		{
-			// nothing new
 			lk.unlock();
 			continue;
 		}
-		// if less than threshold, skip (we want to write only when enough new entries or on timeout)
 		if ((cur_size - to_save_from) < snapshot_threshold)
 		{
 			lk.unlock();
@@ -217,27 +304,25 @@ static void snapshot_thread_func(const std::string snapshot_file, size_t snapsho
 		}
 		size_t start_idx = to_save_from;
 		size_t end_idx = cur_size;
-		// we will copy indices under lock but append to file without holding op_map_mutex
 		lk.unlock();
 
-		// append entries to snapshot file (this uses operation_map directly and relies on reserve no-realloc)
-		bool ok = append_entries_to_snapshot(snapshot_file.c_str(), start_idx, end_idx);
+		bool ok = append_entries_to_snapshot(temp_file.c_str(), start_idx, end_idx);
 		{
 			std::lock_guard<std::mutex> lg(log_mutex);
 			if (VERBOSE)
 				std::clog << "[snapshot] appended entries " << start_idx << "->" << end_idx
-						  << " file='" << snapshot_file << "' ok=" << ok << "\n";
+						  << " file='" << temp_file << "' ok=" << ok << "\n";
 		}
 		if (ok)
 			last_saved_index.store(end_idx, std::memory_order_release);
 	} // while
-	// final wake: flush any remaining
+
+	// final flush: copy everything into final_file (no double .part anymore)
 	size_t cur_size2 = operation_map.size();
 	size_t from = last_saved_index.load(std::memory_order_acquire);
 	if (cur_size2 > from)
 	{
-		append_entries_to_snapshot((snapshot_file + ".part").c_str(), from, cur_size2);
-		append_entries_to_snapshot(snapshot_file.c_str(), from, cur_size2);
+		append_entries_to_snapshot(final_file.c_str(), from, cur_size2);
 	}
 }
 
@@ -812,13 +897,14 @@ void build_operation_map(size_t max_ops = 5'000'000, int max_concat_len = 7)
 	}
 
 	// snapshot file base (part + rename). We'll notify snapshot thread via cv_snapshot when threshold passed.
-	std::string snapshot_file = "precalc.bin"; // default name; main will rename later as required
-	std::string snapshot_part = snapshot_file + ".part";
+	const std::string snapshot_file = "precalc.bin"; // default name; main will rename later as required
+	const std::string snapshot_part = snapshot_file + ".part";
 
 	// Start snapshot thread
 	snapshot_stop_requested = false;
 	last_saved_index.store(0, std::memory_order_release);
-	std::thread snapshot_thread(snapshot_thread_func, snapshot_part, SNAPSHOT_INTERVAL_SEC, SNAPSHOT_THRESHOLD);
+	std::thread snapshot_thread(snapshot_thread_func, snapshot_file, snapshot_part,
+								SNAPSHOT_INTERVAL_SEC, SNAPSHOT_THRESHOLD);
 
 	// worker thread lambda
 	auto worker = [&](unsigned int tid, size_t i_start, size_t i_end)
@@ -1064,6 +1150,7 @@ int main(int argc, char **argv)
 	std::string save_file;
 	VERBOSE = false;
 	std::vector<std::string> extras;
+	int max_concat_len = 14; // default
 
 	for (int i = 1; i < argc; ++i)
 	{
@@ -1097,6 +1184,16 @@ int main(int argc, char **argv)
 			print_usage(argv[0]);
 			return 0;
 		}
+		else if (a == "--depth")
+		{
+			if (i + 1 < argc)
+				max_concat_len = std::stoi(argv[++i]);
+			else
+			{
+				std::cerr << "--depth requires an integer\n";
+				return 1;
+			}
+		}
 		else
 		{
 			extras.push_back(a);
@@ -1120,10 +1217,10 @@ int main(int argc, char **argv)
 	// If build requested, (re)build
 	if (do_build)
 	{
-		size_t desired_ops = 3'500'000; // default target; adjust to reach ~1GB if desired
-		int max_concat_len = 7;			// adjust to produce more base numbers
+		size_t desired_ops = 50'000'000;
 		if (VERBOSE)
-			std::clog << "[main] Building operation_map (target ops ~" << desired_ops << ")...\n";
+			std::clog << "[main] Building operation_map (target ops ~" << desired_ops
+					  << ", depth=" << max_concat_len << ")...\n";
 		build_operation_map(desired_ops, max_concat_len);
 		if (VERBOSE)
 			std::clog << "[main] Build completed: total ops=" << operation_map.size() << "\n";
@@ -1160,6 +1257,7 @@ int main(int argc, char **argv)
 			operation found;
 			if (search_op(found, target))
 			{
+				clean_expression(found.out);
 				std::cout << target << " = " << found.out << "\n";
 			}
 			else

@@ -20,6 +20,7 @@
  *   it must update flags, so find the origin of the bug
  * - GPU
  * - Multithreading when number is not in database
+ * - allow +2 for input
  */
 
 /* COMPILATION COMMANDS
@@ -41,6 +42,7 @@ Then:
 // g++ digits.cpp -o digits -Wall -Wextra -fuse-ld=lld -Wshadow -g3 -fsanitize=address,undefined -O3 -std=c++23 -march=native
 // Add digits_gpu.o if you use the GPU
 #include "includes.hpp"
+#include "libs/exprtk.hpp"
 #ifdef USE_GPU
 #	include "digits_gpu.hpp"
 #	include "digits_simd.hpp"
@@ -144,6 +146,51 @@ static void print_usage(const char *prog)
 	std::cerr << "  --save <file>      Save table to binary file (final full save)\n";
 	std::cerr << "  --verbose          Verbose output\n";
 	std::cerr << "  [number]           Optional: find expression for number\n";
+}
+
+static int eval(std::string in)
+{
+	try
+	{
+		typedef exprtk::symbol_table<double> symbol_table_t;
+		typedef exprtk::expression<double>   expression_t;
+		typedef exprtk::parser<double>       parser_t;
+
+		symbol_table_t symbol_table;
+		expression_t expression;
+		expression.register_symbol_table(symbol_table);
+
+		parser_t parser;
+		parser.compile(in, expression);
+
+		long long t = static_cast<long long>(expression.value());
+
+		if (t < 0 || t > (long long)MAX_RESULT)
+		{
+			std::cerr << "Target must be in [0, " << MAX_RESULT << "]\n";
+			return 4;
+		}
+		type target = (type)t;
+		if (VERBOSE)
+			std::clog << "[main] Searching expression for " << target << " ...\n";
+		operation found;
+		if (search_op(found, target))
+		{
+			clean_expression(found.out);
+			std::cout << target << " = " << found.out << "\n";
+		}
+		else
+		{
+			std::cout << "No expression found for " << target << "\n";
+		}
+	}
+	catch (...)
+	{
+		std::cerr << "Invalid number: " << in << "\n";
+		return 5;
+	}
+
+	return 0;
 }
 
 int main(int argc, char **argv)
@@ -251,39 +298,21 @@ int main(int argc, char **argv)
 	// If a number is provided, try to search it
 	if (!extras.empty())
 	{
-		try
-		{
-			long long t = std::stoll(extras[0]);
-			if (t < 0 || t > (long long)MAX_RESULT)
-			{
-				std::cerr << "Target must be in [0, " << MAX_RESULT << "]\n";
-				return 4;
-			}
-			type target = (type)t;
-			if (VERBOSE)
-				std::clog << "[main] Searching expression for " << target << " ...\n";
-			operation found;
-			if (search_op(found, target))
-			{
-				clean_expression(found.out);
-				std::cout << target << " = " << found.out << "\n";
-			}
-			else
-			{
-				std::cout << "No expression found for " << target << "\n";
-			}
-		}
-		catch (...)
-		{
-			std::cerr << "Invalid number: " << extras[0] << "\n";
-			return 5;
-		}
-	}
-	else
-	{
-		if (VERBOSE)
-			std::clog << "[main] No number provided. Exiting.\n";
+		eval(extras[0]);
 	}
 
-	return 0;
+	// Enter in interactive mode: the user wil give a number, the programm will
+	// give an answer
+
+	while (true)
+	{
+		std::cout << "[main] Enter an expression (enter 'exit' to exit): ";
+		std::string in;
+		std::getline(std::cin, in);
+		if (in == "exit")
+			return 0;
+		eval(in);
+	}
+
+	return -1;
 }

@@ -1,4 +1,5 @@
 *.bin*
+!precalc_5_000_000.bin
 digits
 digits_gpu
 .vscode

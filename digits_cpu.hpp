@@ -574,7 +574,7 @@ bool save_operation_map_full(const std::string &filename)
 }
 
 // build_operation_map with multithreading + periodic snapshot writes
-void build_operation_map_gpu(size_t max_ops = 5'000'000, int max_concat_len = 7)
+void build_operation_map(size_t max_ops = 5'000'000, int max_concat_len = 7)
 {
 	// Reserve to avoid reallocation (critical for safe concurrent reads/writes)
 	{

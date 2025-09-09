@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+	<meta charset="utf-8" />
+	<title>Digits — WebAssembly Demo</title>
+	<meta name="viewport" content="width=device-width,initial-scale=1" />
+	<style>
+		body {
+			font-family: Arial, sans-serif;
+			margin: 1.5rem;
+			background: #f7f7f7;
+			color: #111;
+		}
+
+		h1 {
+			margin-bottom: 0.25rem;
+		}
+
+		#output {
+			background: #0b0b0b;
+			color: #e6ffe6;
+			padding: 1rem;
+			border-radius: 8px;
+			height: 300px;
+			overflow: auto;
+			white-space: pre-wrap;
+			font-family: monospace;
+		}
+
+		#controls {
+			margin-top: 1rem;
+			display: flex;
+			gap: 0.5rem;
+			flex-wrap: wrap;
+			align-items: center;
+		}
+
+		input[type="text"] {
+			padding: 0.5rem;
+			font-size: 1rem;
+			min-width: 250px;
+		}
+
+		button {
+			padding: 0.5rem 0.8rem;
+			font-size: 1rem;
+			cursor: pointer;
+		}
+
+		.small {
+			font-size: 0.9rem;
+			color: #444;
+		}
+
+		#fileControls {
+			margin-top: 0.75rem;
+			display: flex;
+			gap: 0.5rem;
+			align-items: center;
+			flex-wrap: wrap;
+		}
+	</style>
+</head>
+
+<body>
+	<h1>Digits — WebAssembly Demo</h1>
+	<p class="small">
+		Enter a number or expression and click <strong>Send</strong>.<br>
+		You can also load <code>precalc.bin</code> from GitHub or your local
+		machine (optional).
+	</p>
+
+	<div id="output">Loading module…</div>
+
+	<div id="controls">
+		<input id="inputBox" type="text" placeholder="Ex: 1234 or 12+34" />
+		<button id="sendBtn">Send</button>
+		<button id="clearBtn">Clear Output</button>
+	</div>
+
+	<div id="fileControls">
+		<!-- Upload local file into Emscripten FS -->
+		<label>
+			Load a local file (precalc.bin):
+			<input id="localFile" type="file" accept=".bin" />
+		</label>
+
+		<!-- Fetch from GitHub raw -->
+		<input id="rawUrl" type="text" placeholder="GitHub raw URL (optional)"
+			style="min-width:420px" />
+		<button id="fetchBtn">Load into FS</button>
+
+		<span class="small">
+			Example default URL:
+			<code>https://raw.githubusercontent.com/LAPCoder/digits/main/precalc.bin</code>
+		</span>
+	</div>
+
+	<!-- Load the Emscripten-generated JS -->
+	<script>
+		// MODULE CONFIGURATION (must exist **before** digits.js)
+		var Module = {
+			print: function (text) {
+				const out = document.getElementById('output');
+				out.textContent += text + "\n";
+				out.scrollTop = out.scrollHeight;
+			},
+			printErr: function (text) {
+				const out = document.getElementById('output');
+				out.textContent += "ERR: " + text + "\n";
+				out.scrollTop = out.scrollHeight;
+				console.error(text);
+			},
+			onRuntimeInitialized: function () {
+				Module.print("[Module] Runtime ready");
+			},
+			main: function () {
+				try {
+					Module.ccall('main', 'number', [], []);
+				} catch (e) {
+					Module.printErr("[Module] Error calling main(): " + e);
+				}
+			}
+		};
+	</script>
+
+	<script src="digits.js"></script>
+
+	<script>
+		// ---- Helper: write ArrayBuffer into Emscripten FS ----
+		function writeFileToFS(path, arrayBuffer) {
+			if (!Module.FS) {
+				Module.printErr(
+					"[FS] FS is not initialized. Make sure you built with -sFORCE_FILESYSTEM -sEXPORTED_RUNTIME_METHODS=FS"
+					);
+				return;
+			}
+			const data = new Uint8Array(arrayBuffer);
+			try {
+				if (Module.FS.analyzePath(path).exists) {
+					Module.FS.unlink(path);
+				}
+				Module.FS.writeFile(path, data);
+				Module.print("[FS] Wrote " + path + " (" + data.length +
+					" bytes) into Emscripten FS");
+			} catch (e) {
+				Module.printErr("[FS] Could not write file: " + e);
+			}
+		}
+
+		// ---- Send input to C++ ----
+		document.getElementById('sendBtn').addEventListener('click', function () {
+			const val = document.getElementById('inputBox').value;
+			if (!val) return;
+			try {
+				Module.ccall('input', null, ['string'], [val]);
+			} catch (e) {
+				Module.printErr("[Module] ccall('input') failed: " + e);
+			}
+			document.getElementById('inputBox').value = '';
+		});
+
+		document.getElementById('inputBox').addEventListener('keydown', function (e) {
+			if (e.key === 'Enter') {
+				document.getElementById('sendBtn').click();
+			}
+		});
+
+		document.getElementById('clearBtn').addEventListener('click', function () {
+			document.getElementById('output').textContent = '';
+		});
+
+		// ---- Upload local file ----
+		document.getElementById('localFile').addEventListener('change', function (
+		ev) {
+			const f = ev.target.files[0];
+			if (!f) return;
+			const reader = new FileReader();
+			reader.onload = function (evt) {
+				writeFileToFS(f.name, evt.target.result);
+				Module.main();
+			};
+			reader.readAsArrayBuffer(f);
+		});
+
+		// ---- Fetch GitHub raw file ----
+		document.getElementById('fetchBtn').addEventListener('click', function () {
+			let url = document.getElementById('rawUrl').value.trim();
+			if (!url) url =
+				'https://raw.githubusercontent.com/LAPCoder/digits/main/precalc.bin';
+			Module.print("[HTTP] Downloading: " + url);
+			fetch(url)
+				.then(resp => {
+					if (!resp.ok) throw new Error('HTTP ' + resp.status);
+					return resp.arrayBuffer();
+				})
+				.then(buf => {
+					writeFileToFS('precalc.bin', buf);
+					Module.main();
+				})
+				.catch(err => {
+					Module.printErr("[HTTP] Download failed: " + err);
+				});
+		});
+	</script>
+</body>
+
+</html>

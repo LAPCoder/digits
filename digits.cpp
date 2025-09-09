@@ -14,7 +14,7 @@
  * - save/load table to/from binary file (--save file.bin / --load file.bin)
  * - multithreading + snapshots
  * - final cleanup of useless parentheses
- * 
+ *
  * TODO:
  * - fix 0s at the start at numbers (like 11257 = 09573+1684)
  *   it must update flags, so find the origin of the bug
@@ -35,8 +35,11 @@ nvcc -O3 -std=c++17 digits.o digits_gpu.o -o digits_gpu
 --------------------------
 First time:
 ./digits --build --save precalc.bin --verbose --depth 16 1
-Then: 
+Then:
 ./digits --load precalc.bin --verbose 12234
+--------------------------
+To use with Emscripten:
+em++ digits.cpp -o demo/digits.js -Wall -Wextra -Wshadow -O3 -std=c++23 -sEXPORTED_FUNCTIONS=_main,_input -sFORCE_FILESYSTEM -sINITIAL_MEMORY=256MB -sMAXIMUM_MEMORY=2GB -sALLOW_MEMORY_GROWTH -sEXPORTED_RUNTIME_METHODS=ccall,FS
 */
 
 // g++ digits.cpp -o digits -Wall -Wextra -fuse-ld=lld -Wshadow -g3 -fsanitize=address,undefined -O3 -std=c++23 -march=native
@@ -44,13 +47,12 @@ Then:
 #include "includes.hpp"
 #include "libs/exprtk.hpp"
 #ifdef USE_GPU
-#	include "digits_gpu.hpp"
-#	include "digits_simd.hpp"
-
+#include "digits_gpu.hpp"
+#include "digits_simd.hpp"
 #elifdef USE_SIMD
-#	include "digits_simd.hpp"
+#include "digits_simd.hpp"
 #else
-#	include "digits_cpu.hpp"
+#include "digits_cpu.hpp"
 #endif
 
 std::vector<operation> operation_map; // main storage (global)
@@ -153,8 +155,8 @@ static int eval(std::string in)
 	try
 	{
 		typedef exprtk::symbol_table<double> symbol_table_t;
-		typedef exprtk::expression<double>   expression_t;
-		typedef exprtk::parser<double>       parser_t;
+		typedef exprtk::expression<double> expression_t;
+		typedef exprtk::parser<double> parser_t;
 
 		symbol_table_t symbol_table;
 		expression_t expression;
@@ -192,7 +194,53 @@ static int eval(std::string in)
 
 	return 0;
 }
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
 
+extern "C"
+{
+	EMSCRIPTEN_KEEPALIVE
+	void input(const char *input)
+	{
+		std::string in(input);
+		eval(in);
+	}
+}
+
+extern "C"
+{
+	EMSCRIPTEN_KEEPALIVE
+	int main()
+	{
+		std::cout << "[main] Emscripten mode (browser)\n";
+		std::string load_file;
+		VERBOSE = true;
+		int max_concat_len = 14; // default
+
+		if (!load_operation_map("precalc.bin"))
+		{
+			std::cerr << "[main] Can't load precalc.bin\n";
+		}
+
+		// Try to load the file that should be included
+		/*
+		if (!load_file.empty())
+		{
+			if (VERBOSE)
+				std::clog << "[main] Loading from '" << load_file << "' ...\n";
+			if (!load_operation_map(load_file))
+			{
+				std::cerr << "Failed to load from file: " << load_file << "\n";
+				return 2;
+			}
+			if (VERBOSE)
+				std::clog << "[main] Loaded " << operation_map.size() << " operations.\n";
+		}*/
+		std::cout << "[main] Enter an expression: ";
+		return 0;
+	}
+}
+#else
 int main(int argc, char **argv)
 {
 	bool do_build = false;
@@ -271,12 +319,12 @@ int main(int argc, char **argv)
 		if (VERBOSE)
 			std::clog << "[main] Building operation_map (target ops ~" << desired_ops
 					  << ", depth=" << max_concat_len << ")...\n";
-					 
-		#ifdef USE_GPU
+
+#ifdef USE_GPU
 		build_operation_map_gpu(desired_ops, max_concat_len); // TODO better integration
-		#else
+#else
 		build_operation_map(desired_ops, max_concat_len);
-		#endif
+#endif
 		if (VERBOSE)
 			std::clog << "[main] Build completed: total ops=" << operation_map.size() << "\n";
 	}
@@ -316,3 +364,4 @@ int main(int argc, char **argv)
 
 	return -1;
 }
+#endif

@@ -11,4 +11,4 @@ to an other that respect the rule.
 There is also a web demo!
 It available at https://lapcoder.github.io/digits/
 **WARN: YOU MUST UPLOAD A .bin FILE, USE THIS ONE: 
-`https://github.com/LAPCoder/digits/blob/main/precalc_5_000_000.bin`**
+`https://raw.githubusercontent.com/LAPCoder/digits/refs/heads/main/precalc_5_000_000.bin`**

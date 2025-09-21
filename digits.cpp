@@ -17,6 +17,7 @@
  *
  * TODO:
  * - fix 0s at the start at numbers (like 11257 = 09573+1684)
+ * - fix the () not properly cleaned (#1)
  *   it must update flags, so find the origin of the bug
  * - GPU
  * - Multithreading when number is not in database

@@ -12,3 +12,7 @@ There is also a web demo!
 It available at https://lapcoder.github.io/digits/
 **WARN: YOU MUST UPLOAD A .bin FILE, USE THIS ONE: 
 `https://raw.githubusercontent.com/LAPCoder/digits/refs/heads/main/precalc_5_000_000.bin`**
+
+## Compilation
+
+Read the `digits.cpp` to get the compilation commands.

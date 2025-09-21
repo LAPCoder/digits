@@ -29,7 +29,7 @@ BASIC:
 g++ digits.cpp -o digits -Wall -Wextra -fuse-ld=lld -Wshadow -g3 -fsanitize=address,undefined -O3 -std=c++23 -march=native
 SIMD (recommended):
 g++ digits.cpp -o digits -Wall -Wextra -fuse-ld=lld -Wshadow -g3 -fsanitize=address,undefined -O3 -std=c++23 -march=native -DUSE_SIMD
-NVIDIA GPU:
+NVIDIA GPU (NOT WORKING):
 g++ digits.cpp -o digits.o -c -Wall -Wextra -fuse-ld=lld -Wshadow -g3 -O3 -std=c++23 -march=native -DUSE_GPU
 nvcc -O3 -std=c++17 -c digits_gpu.cu -o digits_gpu.o -DUSE_GPU
 nvcc -O3 -std=c++17 digits.o digits_gpu.o -o digits_gpu
